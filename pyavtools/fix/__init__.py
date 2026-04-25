@@ -346,6 +346,9 @@ class Database(object):
             else:
                 raise  # Send the exception up otherwise
 
+    def wait_for_initialization(self, timeout=None):
+        return self.init_event.wait(timeout)
+
     def set_value(self, key, value):
         self.__items[key].value = value
 
@@ -372,7 +375,7 @@ class Database(object):
         self.clientthread.join()
 
 
-def initialize(config):
+def initialize(config, timeout=None):
     global db
     host = config["main"]["FixServer"]
     port = int(config["main"]["FixPort"])
@@ -388,6 +391,15 @@ def initialize(config):
                 db.add_output(output.upper(), config["outputs"][output])
             except ValueError as e:
                 log.warning(e)
+
+    if timeout is None:
+        timeout = config["main"].get("FixInitTimeout")
+    if timeout is not None:
+        timeout = float(timeout)
+    if not db.wait_for_initialization(timeout):
+        db.stop()
+        scheduler.scheduler.stop()
+        raise TimeoutError("Timed out waiting for FIX database initialization")
 
 
 def stop():

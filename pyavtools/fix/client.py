@@ -66,15 +66,16 @@ class ClientThread(threading.Thread):
         self.getout = False
         self.timeout = 1.0
         self.sendqueue = Queue.Queue()
+        self._init_pending = set()
 
     def handle_value(self, d):
         x = d.strip().split(';')
         if "." in x[0]: # If there is a period in the key it's aux data
             y = x[0].split(".")
-            item = self.db.get_item(y[0])
+            item = self.db.get_item(y[0], wait=False)
             item.set_aux_value(y[1], x[1])
         else:
-            item = self.db.get_item(x[0])
+            item = self.db.get_item(x[0], wait=False)
             try:
                 item.annunciate = True if x[2][0] == '1' else False
             except:
@@ -112,9 +113,13 @@ class ClientThread(threading.Thread):
                 if len(x) != 3:
                     log.debug("Problem with ID list message")
                 else:
-                    y = x[2].split(',')  # break up the list of Ids
-                    self.itemInitCount = len(y)
+                    y = [each.strip() for each in x[2].split(',') if each.strip()]  # break up the list of Ids
+                    self._init_pending = set(y)
+                    self.itemInitCount = len(self._init_pending)
                     log.debug("Waiting for {} database item definitions".format(self.itemInitCount))
+                    if self.itemInitCount == 0:
+                        self.db.init_event.set()
+                        return
                     for each in y:
                         log.debug("Requesting a report for {0}".format(each))
                         self.sendthread.queue.put("@q{0}\n".format(each).encode())
@@ -124,14 +129,14 @@ class ClientThread(threading.Thread):
             if d[1] == 's':
                 log.debug("Subscription Acknowledged for {0}".format(key))
                 try:
-                    item = self.db.get_item(key)
+                    item = self.db.get_item(key, wait=False)
                     item.is_subscribed = True
                 except:
                     log.error("Unable to set subscribed bit for {0}".format(key))
             elif d[1] == 'u':
                 log.debug("Un-Subscribe Acknowledged for {0}".format(key))
                 try:
-                    item = self.db.get_item(key)
+                    item = self.db.get_item(key, wait=False)
                     item.is_subscribed = False
                 except:
                     log.error("Unable to clear subscribed bit for {0}".format(key))
@@ -139,10 +144,12 @@ class ClientThread(threading.Thread):
                 self.handle_value(d[2:])
             elif d[1] == 'q':
                 self.db.define_item(key, x[1], x[2], x[3], x[4], x[5], x[6], x[7])
-                self.itemInitCount -= 1
-                if self.itemInitCount == 0:
-                    log.debug("Done Initializing Database")
-                    self.db.init_event.set()
+                if key in self._init_pending:
+                    self._init_pending.discard(key)
+                    self.itemInitCount = len(self._init_pending)
+                    if not self._init_pending:
+                        log.debug("Done Initializing Database")
+                        self.db.init_event.set()
 
         else:  # If no '@' then it must be a value update
             try:
